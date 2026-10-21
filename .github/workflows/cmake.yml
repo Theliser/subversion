@@ -32,6 +32,8 @@ on:
       - INSTALL
       - STATUS
       - README
+      - '.github/workflows/build-intel-macos15.yml'
+      - 'tools/dist/bundle_macos.py'
   pull_request:
     branches: ["*"]
     paths-ignore:
@@ -42,6 +44,8 @@ on:
       - INSTALL
       - STATUS
       - README
+      - '.github/workflows/build-intel-macos15.yml'
+      - 'tools/dist/bundle_macos.py'
 
 concurrency:
   group: ${{ github.ref }}
