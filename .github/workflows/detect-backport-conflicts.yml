@@ -23,8 +23,7 @@
 name: backportbot
 
 on:
-  push:
-    branches: ["1.14.x", "1.15.x"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
