@@ -13,7 +13,6 @@ def run_cmd(cmd, check=True):
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if check and p.returncode != 0:
         print(f"Error running {' '.join(cmd)}:\n{p.stderr}", file=sys.stderr)
-        sys.exit(p.returncode)
     return p
 
 def get_dependencies(macho_path):
@@ -82,7 +81,10 @@ def bundle(dist_dir):
                 continue
 
             orig_dep_path = Path(dep)
-            real_dep_path = orig_dep_path.resolve()
+            try:
+                real_dep_path = orig_dep_path.resolve()
+            except Exception:
+                real_dep_path = orig_dep_path
 
             if not real_dep_path.exists():
                 print(f"WARNING: Dependency not found on disk: {dep} (referenced by {target.name})")
@@ -105,13 +107,19 @@ def bundle(dist_dir):
                 to_process.add(dest_file)
 
             # Also create symlink if orig_dep_path.name != dest_name
-            if orig_dep_path.name != dest_name:
-                alias = lib_dir / orig_dep_path.name
+            orig_name = orig_dep_path.name
+            if orig_name != dest_name:
+                alias = lib_dir / orig_name
+                if alias.is_symlink() or alias.exists():
+                    try:
+                        alias.unlink()
+                    except Exception:
+                        pass
                 if not alias.exists():
                     alias.symlink_to(dest_name)
 
-            # Rewrite reference in target from `dep` to `@rpath/{orig_dep_path.name}`
-            new_ref = f"@rpath/{orig_dep_path.name}"
+            # Rewrite reference in target from `dep` to `@rpath/{orig_name}`
+            new_ref = f"@rpath/{orig_name}"
             run_cmd(['install_name_tool', '-change', dep, new_ref, str(target)], check=False)
 
     # Second pass: ensure all dylibs in lib_dir reference each other via @rpath

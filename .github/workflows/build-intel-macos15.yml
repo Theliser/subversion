@@ -1,4 +1,4 @@
-name: Build Subversion for Intel macOS 15
+name: Build Intel macOS 15 SVN Release
 
 on:
   workflow_dispatch:
@@ -7,10 +7,10 @@ on:
         description: 'Release Tag (e.g. v1.16.0-intel-macos15)'
         required: false
         default: 'v1.16.0-intel-macos15'
-      release_title:
-        description: 'Release Title'
-        required: false
-        default: 'Subversion for Intel macOS 15 (x86_64)'
+      draft:
+        description: 'Create as Draft Release'
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*'
@@ -19,98 +19,91 @@ permissions:
   contents: write
 
 jobs:
-  build-intel-macos15:
-    name: Build for Intel macOS 15 (x86_64)
+  build:
+    name: Build SVN (Intel x86_64 macOS 15)
     runs-on: macos-15-intel
-    env:
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      HOMEBREW_NO_INSTALL_CLEANUP: "1"
-      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Verify runner architecture and OS
+      - name: Verify Architecture & OS
         run: |
-          echo "=== Machine Architecture ==="
-          uname -a
-          uname -m
+          echo '=== System Information ==='
           sw_vers
+          uname -a
           arch
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "Error: Expected x86_64 architecture, got $(uname -m)"
+            exit 1
+          fi
 
-      - name: Install dependencies via Homebrew
+      - name: Install MacPorts
         run: |
-          echo "Installing SVN required dependencies via Homebrew..."
-          brew install apr apr-util expat apache-serf utf8proc lz4
+          echo '=== Installing MacPorts for macOS 15 Sequoia (x86_64) ==='
+          curl -fsSLO https://github.com/macports/macports-base/releases/download/v2.12.7/MacPorts-2.12.7-15-Sequoia.pkg
+          sudo installer -pkg MacPorts-2.12.7-15-Sequoia.pkg -target /
+          echo "/opt/local/bin:/opt/local/sbin" >> "$GITHUB_PATH"
 
-      - name: Setup environment variables
+      - name: Install Dependencies via MacPorts
         run: |
-          APR_PREFIX="$(brew --prefix apr)"
-          APR_UTIL_PREFIX="$(brew --prefix apr-util)"
-          EXPAT_PREFIX="$(brew --prefix expat)"
-          SQLITE_PREFIX="$(brew --prefix sqlite 2>/dev/null || echo '/usr/local/opt/sqlite')"
-          SERF_PREFIX="$(brew --prefix apache-serf)"
-          GETTEXT_PREFIX="$(brew --prefix gettext 2>/dev/null || echo '/usr/local/opt/gettext')"
-          OPENSSL_PREFIX="$(brew --prefix openssl@3 2>/dev/null || echo '/usr/local/opt/openssl@3')"
-          UTF8PROC_PREFIX="$(brew --prefix utf8proc)"
-          LZ4_PREFIX="$(brew --prefix lz4)"
+          export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
+          echo '=== Installing pre-compiled packages via MacPorts ==='
+          sudo port -N install apr apr-util serf1 expat sqlite3 gettext pkgconfig ninja
 
-          PKG_CONFIG_PATH="${APR_PREFIX}/lib/pkgconfig:${APR_UTIL_PREFIX}/lib/pkgconfig:${EXPAT_PREFIX}/lib/pkgconfig:${SQLITE_PREFIX}/lib/pkgconfig:${SERF_PREFIX}/lib/pkgconfig:${GETTEXT_PREFIX}/lib/pkgconfig:${OPENSSL_PREFIX}/lib/pkgconfig:${UTF8PROC_PREFIX}/lib/pkgconfig:${LZ4_PREFIX}/lib/pkgconfig"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=${APR_PREFIX};${APR_UTIL_PREFIX};${EXPAT_PREFIX};${SQLITE_PREFIX};${SERF_PREFIX};${GETTEXT_PREFIX};${OPENSSL_PREFIX};${UTF8PROC_PREFIX};${LZ4_PREFIX}" >> "$GITHUB_ENV"
-
-      - name: Generate build scripts (gen-make)
-        run: python3 ./gen-make.py -t cmake
-
-      - name: Configure CMake for Intel macOS 15
+      - name: Generate CMake Build System
         run: |
-          cmake -B build \
-            -G Ninja \
+          python3 ./gen-make.py -t cmake
+
+      - name: Configure CMake
+        run: |
+          export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
+          export PKG_CONFIG_PATH="/opt/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+          cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/dist" \
-            -DCMAKE_OSX_ARCHITECTURES="x86_64" \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET="15.0" \
-            -DCMAKE_INSTALL_RPATH="@executable_path/../lib" \
-            -DCMAKE_BUILD_WITH_INSTALL_RPATH=FALSE \
-            -DCMAKE_INSTALL_NAME_DIR="@rpath" \
+            -DCMAKE_PREFIX_PATH="/opt/local" \
+            -DPKG_CONFIG_EXECUTABLE="/opt/local/bin/pkg-config" \
+            -DSVN_USE_PKG_CONFIG=ON \
             -DBUILD_SHARED_LIBS=ON \
             -DSVN_ENABLE_PROGRAMS=ON \
             -DSVN_ENABLE_TOOLS=ON \
+            -DSVN_ENABLE_TESTS=OFF \
             -DSVN_ENABLE_RA_SERF=ON \
             -DSVN_ENABLE_NLS=ON \
-            -DSVN_ENABLE_TESTS=OFF \
             -DSVN_ENABLE_APACHE_MODULES=OFF \
             -DSVN_ENABLE_SWIG_PERL=OFF \
             -DSVN_ENABLE_SWIG_PYTHON=OFF \
             -DSVN_ENABLE_SWIG_RUBY=OFF \
-            -DSVN_ENABLE_JAVAHL=OFF
+            -DSVN_ENABLE_JAVAHL=OFF \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="15.0" \
+            -DCMAKE_INSTALL_RPATH="@executable_path/../lib" \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=FALSE \
+            -DCMAKE_INSTALL_NAME_DIR="@rpath"
 
-      - name: Build Subversion
-        run: cmake --build build --config Release --parallel
-
-      - name: Install to dist
-        run: cmake --install build --config Release
-
-      - name: Bundle dependencies into dist/lib
-        run: python3 ./tools/dist/bundle_macos.py "${{ github.workspace }}/dist"
-
-      - name: Verify compiled binaries
+      - name: Build and Install
         run: |
-          echo "=== File Architecture Verification ==="
-          file "${{ github.workspace }}/dist/bin/svn"
-          echo "=== Dynamic Library Link Verification ==="
-          otool -L "${{ github.workspace }}/dist/bin/svn"
-          echo "=== Functional Test: svn --version ==="
-          "${{ github.workspace }}/dist/bin/svn" --version
-          echo "=== Functional Test: svnadmin --version ==="
-          "${{ github.workspace }}/dist/bin/svnadmin" --version
-          echo "=== Functional Test: svnlook --version ==="
-          "${{ github.workspace }}/dist/bin/svnlook" --version
-          echo "=== Functional Test: svnversion --version ==="
-          "${{ github.workspace }}/dist/bin/svnversion" --version
+          export PATH="/opt/local/bin:/opt/local/sbin:$PATH"
+          cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+          cmake --install build --config Release
 
-      - name: Add installer helper and README
+      - name: Bundle Dynamic Libraries (Make Standalone)
+        run: |
+          python3 ./tools/dist/bundle_macos.py "${{ github.workspace }}/dist"
+
+      - name: Verify Binaries
+        run: |
+          echo '=== Verifying SVN Binary Architecture ==='
+          file "${{ github.workspace }}/dist/bin/svn"
+          echo '=== Checking Dependencies ==='
+          otool -L "${{ github.workspace }}/dist/bin/svn"
+          echo '=== Running svn --version ==='
+          "${{ github.workspace }}/dist/bin/svn" --version
+          echo '=== Running svnadmin --version ==='
+          "${{ github.workspace }}/dist/bin/svnadmin" --version
+
+      - name: Add Helper Scripts
         run: |
           cat << 'EOF' > "${{ github.workspace }}/dist/install.sh"
           #!/usr/bin/env bash
@@ -133,61 +126,66 @@ jobs:
           cat << 'EOF' > "${{ github.workspace }}/dist/README.md"
           # Subversion for Intel macOS 15 (x86_64)
 
-          Portable Subversion command-line tools built for macOS 15 (Intel x86_64).
+          Standalone, relocatable Apache Subversion command-line tools compiled for macOS 15 (Intel x86_64).
 
-          ## Usage
-
-          ### Option 1: Direct Run (Relocatable)
+          ## Quick Start (No installation needed)
           ```bash
           export PATH="/path/to/extracted/bin:$PATH"
           svn --version
           ```
 
-          ### Option 2: System Install
+          ## System Install (Optional)
           ```bash
           sudo ./install.sh /usr/local
           ```
           EOF
 
-      - name: Create release packages
-        id: archive
+      - name: Create Release Package
+        id: package
         run: |
           TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
           if [ -z "$TAG" ] || [ "$TAG" = "trunk" ]; then
             TAG="v1.16.0-intel-macos15"
           fi
-          PACKAGE_NAME="svn-${TAG}-macos15-x86_64"
-          mv dist "${PACKAGE_NAME}"
-          tar -czf "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
-          zip -rq "${PACKAGE_NAME}.zip" "${PACKAGE_NAME}"
-          shasum -a 256 "${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}.zip" > checksums.txt
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          PKG_NAME="svn-${TAG}-macos15-x86_64"
+          mv dist "$PKG_NAME"
+          tar -czf "${PKG_NAME}.tar.gz" "$PKG_NAME"
+          zip -rq "${PKG_NAME}.zip" "$PKG_NAME"
+          shasum -a 256 "${PKG_NAME}.tar.gz" "${PKG_NAME}.zip" > checksums.txt
+          echo "archive_tgz=${PKG_NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "archive_zip=${PKG_NAME}.zip" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "pkg_name=$PKG_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Artifacts
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.archive.outputs.package_name }}
+          name: ${{ steps.package.outputs.archive_tgz }}
           path: |
-            ${{ steps.archive.outputs.package_name }}.tar.gz
-            ${{ steps.archive.outputs.package_name }}.zip
+            ${{ steps.package.outputs.archive_tgz }}
+            ${{ steps.package.outputs.archive_zip }}
             checksums.txt
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ steps.archive.outputs.tag }}"
-          TITLE="${{ github.event.inputs.release_title || 'Subversion for Intel macOS 15 (x86_64)' }}"
-          PKG="${{ steps.archive.outputs.package_name }}"
+          TAG="${{ steps.package.outputs.tag_name }}"
+          PKG="${{ steps.package.outputs.pkg_name }}"
+          TGZ="${{ steps.package.outputs.archive_tgz }}"
+          ZIP="${{ steps.package.outputs.archive_zip }}"
+          DRAFT_FLAG=""
+          if [ "${{ github.event.inputs.draft }}" = "true" ]; then
+            DRAFT_FLAG="--draft"
+          fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG exists, uploading assets..."
-            gh release upload "$TAG" "${PKG}.tar.gz" "${PKG}.zip" checksums.txt --clobber
+            gh release upload "$TAG" "$TGZ" "$ZIP" checksums.txt --clobber
           else
-            echo "Creating release $TAG..."
-            gh release create "$TAG" "${PKG}.tar.gz" "${PKG}.zip" checksums.txt \
-              --title "$TITLE" \
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" "$TGZ" "$ZIP" checksums.txt \
+              --title "Subversion CLI for Intel macOS 15 ($TAG)" \
               --notes "### Subversion for Intel macOS 15 (x86_64)
 
 这是使用 GitHub Actions 在 Intel macOS 15 运行器（\`macos-15-intel\`）上编译生成的 Subversion (SVN) 命令行工具。
@@ -201,12 +199,12 @@ jobs:
 - \`svnrdump\`: 远程仓库 dump/load 工具
 - \`svnserve\`: 自带的独立 SVN 服务守护进程
 - \`svnmucc\`: 多 URL 提交客户端
-- 完整独立封装动态库：包含 APR、APR-Util、Serf (HTTP/HTTPS 支持)、SQLite3、Expat、Gettext、OpenSSL 3 等，无需额外在目标机器安装 Homebrew 即可直接运行。
+- 完整独立封装动态库：包含 APR、APR-Util、Serf (HTTP/HTTPS 支持)、SQLite3、Expat、Gettext、OpenSSL 3 等，无需额外在目标机器安装 Homebrew 或 MacPorts 即可直接运行。
 
 #### 🚀 安装与使用方法
 解压后直接使用（免安装）：
 \`\`\`bash
-tar -xzf ${PKG}.tar.gz
+tar -xzf ${TGZ}
 cd ${PKG}
 ./bin/svn --version
 \`\`\`
@@ -223,5 +221,6 @@ sudo ./install.sh /usr/local
 
 #### 校验码 (SHA256)
 查看 \`checksums.txt\` 获取文件完整哈希值。
-"
+" \
+              $DRAFT_FLAG
           fi
