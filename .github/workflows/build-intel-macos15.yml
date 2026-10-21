@@ -43,7 +43,6 @@ jobs:
           brew update --quiet || true
           brew install ninja cmake pkg-config apr apr-util expat sqlite apache-serf gettext ncurses utf8proc lz4 openssl@3 dylibbundler
 
-          # Build PKG_CONFIG_PATH and CMAKE_PREFIX_PATH
           PACKAGES="apr apr-util expat sqlite apache-serf gettext ncurses utf8proc lz4 openssl@3"
           PKG_PATHS=""
           PREFIX_PATHS="$(brew --prefix)"
@@ -137,26 +136,10 @@ jobs:
             DRAFT_FLAG="--draft"
           fi
 
-          NOTES=$(cat <<'EOF'
-### Apache Subversion CLI for Intel Mac (x86_64, macOS 15)
-- **Architecture**: Intel `x86_64`
-- **Target OS**: macOS 15 Sequoia (Intel)
-- **Features**: Includes `svn`, `svnadmin`, `svnserve`, `svnlook`, `svnsync`, etc.
-- **Standalone**: All dynamic library dependencies (Serf, APR, SQLite, OpenSSL, etc.) are bundled in `lib/`.
-
-#### Quick Start:
-```bash
-tar -xzvf ${ARCHIVE}
-export PATH="\$PWD/bin:\$PATH"
-svn --version
-```
-EOF
-          )
-
           if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "Release $TAG exists, uploading asset..."
             gh release upload "$TAG" "$ARCHIVE" --clobber --repo "${{ github.repository }}"
           else
             echo "Creating new release $TAG..."
-            gh release create "$TAG" "$ARCHIVE"               --title "Subversion CLI for Intel macOS 15 ($TAG)"               --notes "$NOTES"               $DRAFT_FLAG               --repo "${{ github.repository }}"
+            gh release create "$TAG" "$ARCHIVE"               --title "Subversion CLI for Intel macOS 15 ($TAG)"               --notes "Standalone Apache Subversion CLI built for Intel Mac (x86_64, macOS 15 Sequoia)."               $DRAFT_FLAG               --repo "${{ github.repository }}"
           fi
