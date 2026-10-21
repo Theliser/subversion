@@ -1,0 +1,162 @@
+name: Build Intel macOS 15 SVN Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v1.16.0-intel-macos15)'
+        required: true
+        default: 'v1.16.0-intel-macos15'
+      draft:
+        description: 'Create as Draft Release'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build SVN (Intel x86_64 macOS 15)
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Verify Architecture & OS
+        run: |
+          echo '=== System Information ==='
+          sw_vers
+          uname -a
+          arch
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "Error: Expected x86_64 architecture, got $(uname -m)"
+            exit 1
+          fi
+
+      - name: Install Build Dependencies via Homebrew
+        run: |
+          brew update --quiet || true
+          brew install ninja cmake pkg-config apr apr-util expat sqlite apache-serf gettext ncurses utf8proc lz4 openssl@3 dylibbundler
+
+          # Build PKG_CONFIG_PATH and CMAKE_PREFIX_PATH
+          PACKAGES="apr apr-util expat sqlite apache-serf gettext ncurses utf8proc lz4 openssl@3"
+          PKG_PATHS=""
+          PREFIX_PATHS="$(brew --prefix)"
+          for pkg in $PACKAGES; do
+            pfx=$(brew --prefix "$pkg" 2>/dev/null || true)
+            if [ -n "$pfx" ]; then
+              PREFIX_PATHS="$PREFIX_PATHS;$pfx"
+              if [ -d "$pfx/lib/pkgconfig" ]; then
+                PKG_PATHS="${PKG_PATHS:+$PKG_PATHS:}$pfx/lib/pkgconfig"
+              fi
+            fi
+          done
+
+          echo "PKG_CONFIG_PATH=$PKG_PATHS:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$PREFIX_PATHS" >> "$GITHUB_ENV"
+          echo "Configured Homebrew search paths."
+
+      - name: Generate CMake Build System
+        run: |
+          python3 ./gen-make.py -t cmake
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/dist"             -DBUILD_SHARED_LIBS=ON             -DSVN_ENABLE_PROGRAMS=ON             -DSVN_ENABLE_TOOLS=ON             -DSVN_ENABLE_TESTS=OFF             -DSVN_ENABLE_RA_SERF=ON             -DSVN_ENABLE_NLS=ON             -DCMAKE_OSX_ARCHITECTURES="x86_64"             -DCMAKE_OSX_DEPLOYMENT_TARGET="15.0"
+
+      - name: Build and Install
+        run: |
+          cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+          cmake --install build --config Release
+
+      - name: Bundle Dynamic Libraries (Make Standalone)
+        run: |
+          echo '=== Bundling dependencies for standalone distribution ==='
+          BIN_ARGS=""
+          for b in dist/bin/*; do
+            if [ -f "$b" ] && [ -x "$b" ]; then
+              BIN_ARGS="$BIN_ARGS -x $b"
+            fi
+          done
+
+          dylibbundler -od -b $BIN_ARGS -d dist/lib -p "@executable_path/../lib" || true
+
+          for d in dist/lib/*.dylib; do
+            if [ -f "$d" ] && [ ! -L "$d" ]; then
+              dylibbundler -od -b -x "$d" -d dist/lib -p "@loader_path" 2>/dev/null || true
+            fi
+          done
+
+          for b in dist/bin/*; do
+            if [ -f "$b" ] && [ -x "$b" ]; then
+              install_name_tool -add_rpath "@executable_path/../lib" "$b" 2>/dev/null || true
+            fi
+          done
+
+          for d in dist/lib/*.dylib; do
+            if [ -f "$d" ] && [ ! -L "$d" ]; then
+              install_name_tool -add_rpath "@loader_path" "$d" 2>/dev/null || true
+            fi
+          done
+
+      - name: Verify Binaries
+        run: |
+          echo '=== Verifying SVN Binary ==='
+          file dist/bin/svn
+          ./dist/bin/svn --version
+          ./dist/bin/svnadmin --version
+
+      - name: Create Release Package
+        id: package
+        run: |
+          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          ARCHIVE_NAME="svn-${TAG}-macos15-x86_64.tar.gz"
+          tar -czvf "$ARCHIVE_NAME" -C dist .
+          echo "archive_name=$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.archive_name }}
+          path: ${{ steps.package.outputs.archive_name }}
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.package.outputs.tag_name }}"
+          ARCHIVE="${{ steps.package.outputs.archive_name }}"
+          DRAFT_FLAG=""
+          if [ "${{ github.event.inputs.draft }}" = "true" ]; then
+            DRAFT_FLAG="--draft"
+          fi
+
+          NOTES=$(cat <<'EOF'
+### Apache Subversion CLI for Intel Mac (x86_64, macOS 15)
+- **Architecture**: Intel `x86_64`
+- **Target OS**: macOS 15 Sequoia (Intel)
+- **Features**: Includes `svn`, `svnadmin`, `svnserve`, `svnlook`, `svnsync`, etc.
+- **Standalone**: All dynamic library dependencies (Serf, APR, SQLite, OpenSSL, etc.) are bundled in `lib/`.
+
+#### Quick Start:
+```bash
+tar -xzvf ${ARCHIVE}
+export PATH="\$PWD/bin:\$PATH"
+svn --version
+```
+EOF
+          )
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG exists, uploading asset..."
+            gh release upload "$TAG" "$ARCHIVE" --clobber --repo "${{ github.repository }}"
+          else
+            echo "Creating new release $TAG..."
+            gh release create "$TAG" "$ARCHIVE"               --title "Subversion CLI for Intel macOS 15 ($TAG)"               --notes "$NOTES"               $DRAFT_FLAG               --repo "${{ github.repository }}"
+          fi
